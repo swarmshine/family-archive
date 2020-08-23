@@ -24,17 +24,20 @@ import java.net.Proxy
 import java.net.Socket
 import java.nio.file.Files
 import java.nio.file.Paths
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.SSLContext
 
 
 object Browser : Logging {
     lateinit var driver: ChromeDriver
+    private val executor = Executors.newSingleThreadExecutor()
+    private val isDownloading = AtomicBoolean()
 
     private var socksProxy: InetSocketAddress? = null
 
-    fun launch(
-            socksProxy: String,
-            startUrl: String) {
+    fun launch(socksProxy: String,
+               startUrl: String) {
         WebDriverManager.chromedriver().apply {
             setup()
         }
@@ -108,7 +111,7 @@ object Browser : Logging {
         logger.info("response: ${response.code}")
 
         val contentType = response.getHeader("content-type")?.value ?: ""
-        val fileExtension = when{
+        val fileExtension = when {
             contentType.contains("jpg") -> ".jpg"
             contentType.contains("jpeg") -> ".jpg"
             contentType.contains("png") -> ".png"
@@ -126,6 +129,30 @@ object Browser : Logging {
             response.entity.writeTo(file)
         }
     }
+
+    fun startDownloading(saveToDirectory: String) {
+        if (!isDownloading.compareAndSet(false, true))
+            return
+
+    }
+
+    fun stopDownloading() {
+        if(!isDownloading.compareAndSet(true, false))
+            return
+        executor.
+    }
+
+    fun isAbleToStartDownloading(): Boolean {
+        if (isDownloading.get()) return false
+        return false
+    }
+
+    fun isAbleToStopDownloading(): Boolean {
+        if (!isDownloading.get()) return false
+        return false
+    }
+
+    val status: String get() {};
 
     fun close() {
         if (::driver.isInitialized) {

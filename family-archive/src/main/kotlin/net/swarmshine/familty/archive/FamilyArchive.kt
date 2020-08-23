@@ -4,14 +4,15 @@ import java.awt.EventQueue
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
 import java.nio.file.Paths
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.prefs.Preferences
-import javax.swing.BoxLayout
-import javax.swing.JButton
-import javax.swing.JFrame
+import javax.swing.*
 
 class FamilyArchive : JFrame() {
 
     private val prefs = Preferences.userNodeForPackage(FamilyArchive::class.java)
+    private val pollingBrowserStateExecutor = Executors.newSingleThreadScheduledExecutor()
 
     val socksProxy = PreferenceWidget(
             identity = "socksProxy",
@@ -38,22 +39,31 @@ class FamilyArchive : JFrame() {
         }
     }
 
-    val downloadBtn = JButton("Downlaoad").apply {
-        addActionListener {
-            Browser.download(saveToDirectory.value)
-        }
-    }
+    val startDownloadingBtn: JButton = JButton("Start downloading")
+    val stopDownloadingBtn: JButton = JButton("Stop downloading")
+
+    val status = JLabel("")
 
     val resetPreferences = JButton("Reset preferences and close").apply {
         addActionListener {
             PreferenceWidget.resetPreferences()
-            Browser.close()
+            releaseResources()
             isVisible = false
             dispose()
         }
     }
 
     init {
+        startDownloadingBtn.addActionListener {
+            Browser.startDownloading(saveToDirectory.value)
+            startDownloadingBtn.isEnabled = false
+        }
+
+        stopDownloadingBtn.addActionListener {
+            Browser.stopDownloading()
+            stopDownloadingBtn.isEnabled = false
+        }
+
         isVisible = true
         title = "Family Archive"
 
@@ -63,19 +73,38 @@ class FamilyArchive : JFrame() {
             add(startUrl)
             add(saveToDirectory)
             add(launchBrowserBtn)
-            add(downloadBtn)
+            add(startDownloadingBtn)
+            add(stopDownloadingBtn)
+            add(status)
             add(resetPreferences)
         }
 
         defaultCloseOperation = JFrame.EXIT_ON_CLOSE
         addWindowListener(object : WindowAdapter() {
             override fun windowClosed(e: WindowEvent?) {
-                Browser.close()
+                releaseResources()
                 super.windowClosed(e)
             }
         })
 
         setSize(500, 600)
+
+        pollingBrowserStateExecutor.scheduleAtFixedRate({
+            val browserAbleToStartDownloading = Browser.isAbleToStartDownloading()
+            val browserAbleToStopDownloading = Browser.isAbleToStopDownloading()
+            val browserStatus = Browser.status
+            EventQueue.invokeAndWait {
+                startDownloadingBtn.isEnabled = browserAbleToStartDownloading
+                stopDownloadingBtn.isEnabled = browserAbleToStopDownloading
+                status.text = browserStatus
+            }
+        }, 1, 1, TimeUnit.SECONDS)
+    }
+
+    fun releaseResources() {
+        pollingBrowserStateExecutor.shutdown()
+        pollingBrowserStateExecutor.awaitTermination(10, TimeUnit.SECONDS)
+        Browser.close()
     }
 
     //TODO UI log appender
