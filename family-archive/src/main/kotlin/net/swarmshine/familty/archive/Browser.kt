@@ -86,13 +86,11 @@ object Browser : Logging {
             .build();
 
     fun downloadImage(imageSrc: String, saveToDirectory: String, page: Int) {
-
         val context = HttpClientContext.create();
         context.setAttribute("socks.address", socksProxy);
 
-        val httpGet = HttpGet(imageSrc)
-
-        httpGet.addHeader("accept", "image/webp,image/apng,image/*,*/*;q=0.9")
+        val request = HttpGet(imageSrc)
+        request.addHeader("accept", "image/webp,image/apng,image/*,*/*;q=0.9")
 
         val cookieStore = BasicCookieStore()
         driver.manage().cookies.map { driverCookie ->
@@ -104,34 +102,29 @@ object Browser : Logging {
                 setAttribute(ClientCookie.DOMAIN_ATTR, "true");
             }
         }.forEach { cookieStore.addCookie(it) }
-
         context.cookieStore = cookieStore
 
-        val response = httpClient.execute(httpGet, context)
-
+        val response = httpClient.execute(request, context)
         logger.info("response: ${response.code}")
 
-        Files.createDirectories(Paths.get(saveToDirectory))
+        val contentType = response.getHeader("content-type")?.value ?: ""
+        val fileExtension = when{
+            contentType.contains("jpg") -> ".jpg"
+            contentType.contains("jpeg") -> ".jpg"
+            contentType.contains("png") -> ".png"
+            contentType.contains("gif") -> ".gif"
+            contentType.contains("gif") -> ".gif"
+            contentType.contains("tiff") -> ".tiff"
+            contentType.contains("webp") -> ".webp"
+            else -> ".jpg"
+        }
 
-        val imageFile = Paths.get(saveToDirectory).resolve("image-$page").toFile()
+        Files.createDirectories(Paths.get(saveToDirectory))
+        val imageFile = Paths.get(saveToDirectory).resolve("image-$page.$fileExtension").toFile()
 
         FileOutputStream(imageFile).use { file ->
             response.entity.writeTo(file)
         }
-
-//            val imageSrcUrl = URL(imageSrc)
-//            val target = HttpHost(imageSrcUrl.authority, "https");
-//            val request = HttpGet(imageSrcUrl.toURI());
-//
-//            logger.info("Executing request $request to $target via SOCKS proxy $socksProxy");
-//            val response = httpclient.execute(target, request, context);
-//            try {
-//                logger.info("Response: ${response.code}")
-//                EntityUtils.consume(response.getEntity());
-//            } finally {
-//                response.close();
-//            }
-
     }
 
     fun close() {
