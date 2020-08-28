@@ -234,6 +234,7 @@ object Browser : Logging {
 
     data class Status(
             val isDownloading: Boolean,
+            val filmViewIsOpen: Boolean,
             val foundDownloadedFiles: Int,
             val currentPage: Int,
             val totalPages: Int)
@@ -244,6 +245,7 @@ object Browser : Logging {
         if (dowloadingThread != null) {
             return Status(
                     isDownloading = dowloadingThread != null,
+                    filmViewIsOpen = true,
                     currentPage = currentPage,
                     totalPages = totalPages,
                     foundDownloadedFiles = foundFiles
@@ -254,12 +256,14 @@ object Browser : Logging {
             if (meta != null) {
                 return Status(
                         isDownloading = false,
+                        filmViewIsOpen = true,
                         currentPage = meta.currentPage,
                         totalPages = meta.totalPages,
                         foundDownloadedFiles = findDownloadedFiles().size)
             } else {
                 return Status(
                         isDownloading = false,
+                        filmViewIsOpen = false,
                         currentPage = -1,
                         totalPages = -1,
                         foundDownloadedFiles = findDownloadedFiles().size)

@@ -6,12 +6,10 @@ import java.awt.event.WindowEvent
 import java.nio.file.Paths
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import java.util.prefs.Preferences
 import javax.swing.*
 
 class FamilyArchive : JFrame() {
 
-    private val prefs = Preferences.userNodeForPackage(FamilyArchive::class.java)
     private val pollingBrowserStateExecutor = Executors.newSingleThreadScheduledExecutor()
 
     val socksProxy = PreferenceWidget(
@@ -39,8 +37,12 @@ class FamilyArchive : JFrame() {
         }
     }
 
-    val startDownloadingBtn: JButton = JButton("Start downloading")
-    val stopDownloadingBtn: JButton = JButton("Stop downloading")
+    val startDownloadingBtn: JButton = JButton("Start downloading").apply {
+        isEnabled = false
+    }
+    val stopDownloadingBtn: JButton = JButton("Stop downloading").apply {
+        isEnabled = false
+    }
 
     val status = JLabel("")
 
@@ -92,7 +94,7 @@ class FamilyArchive : JFrame() {
         pollingBrowserStateExecutor.scheduleAtFixedRate({
             val browserStatus = Browser.requestStatus()
             EventQueue.invokeAndWait {
-                startDownloadingBtn.isEnabled = !browserStatus.isDownloading
+                startDownloadingBtn.isEnabled = !browserStatus.isDownloading && browserStatus.filmViewIsOpen
                 stopDownloadingBtn.isEnabled = browserStatus.isDownloading
                 status.text = "Downloaded: ${browserStatus.foundDownloadedFiles}" +
                         ", Total: ${browserStatus.totalPages}" +
