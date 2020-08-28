@@ -31,7 +31,7 @@ import kotlin.streams.toList
 
 
 object Browser : Logging {
-    lateinit var driver: ChromeDriver
+    var driver: ChromeDriver? = null
 
     private var dowloadingThread: Thread? = null
 
@@ -53,7 +53,7 @@ object Browser : Logging {
                 addArguments("--proxy-server=socks5://$socksProxy")
             }
         });
-        driver.navigate().to(startUrl)
+        driver!!.navigate().to(startUrl)
 
         this.socksProxy = InetSocketAddress(
                 socksProxy.split(":")[0],
@@ -68,6 +68,8 @@ object Browser : Logging {
 
     fun detectCurrentPageImageToDownload(): CurrentPageMeta? {
         try {
+            val driver = this.driver ?: return null
+
             val meta = CurrentPageMeta()
 
             val pageInput = driver.findElementByXPath("//input[@name='currentTileNumber']")
@@ -93,7 +95,7 @@ object Browser : Logging {
 
     fun flipToPage(page: Int) {
         try {
-            val pageInput = driver.findElementByXPath("//input[@name='currentTileNumber']")
+            val pageInput = driver!!.findElementByXPath("//input[@name='currentTileNumber']")
             pageInput.clear()
             pageInput.sendKeys((page + 1).toString(), Keys.ENTER)
         } catch (exc: Exception) {
@@ -119,7 +121,7 @@ object Browser : Logging {
         request.addHeader("accept", "image/webp,image/apng,image/*,*/*;q=0.9")
 
         val cookieStore = BasicCookieStore()
-        driver.manage().cookies.map { driverCookie ->
+        driver!!.manage().cookies.map { driverCookie ->
             BasicClientCookie(driverCookie.name, driverCookie.value).apply {
                 domain = driverCookie.domain
                 path = driverCookie.path
@@ -157,6 +159,7 @@ object Browser : Logging {
 
     @Synchronized
     fun startDownloading(saveToDirectory: Path) {
+        this.saveToDirectory = saveToDirectory
         if (dowloadingThread != null) {
             dowloadingThread = Thread(::downloadingProcess)
             dowloadingThread!!.start()
@@ -262,13 +265,13 @@ object Browser : Logging {
                         foundDownloadedFiles = findDownloadedFiles().size)
             }
         }
-    };
-
+    }
 
     @Synchronized
     fun close() {
-        if (::driver.isInitialized) {
-            driver.quit()
+        if (driver != null) {
+            driver!!.quit()
+            driver = null
         }
     }
 }
