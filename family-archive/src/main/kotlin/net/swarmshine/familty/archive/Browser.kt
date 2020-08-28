@@ -19,23 +19,29 @@ import org.openqa.selenium.Keys
 import org.openqa.selenium.chrome.ChromeDriver
 import org.openqa.selenium.chrome.ChromeOptions
 import java.io.FileOutputStream
+import java.lang.Thread.sleep
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.Socket
 import java.nio.file.Files
+import java.nio.file.Path
 import java.nio.file.Paths
-import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.SSLContext
+import kotlin.streams.toList
 
 
 object Browser : Logging {
     lateinit var driver: ChromeDriver
-    private val executor = Executors.newSingleThreadExecutor()
-    private val isDownloading = AtomicBoolean()
 
+    private var dowloadingThread: Thread? = null
+
+    private var totalPages = 0
+    private var currentPage = 0
+    private var foundFiles = 0
+    private var saveToDirectory: Path = Paths.get("download")
     private var socksProxy: InetSocketAddress? = null
 
+    @Synchronized
     fun launch(socksProxy: String,
                startUrl: String) {
         WebDriverManager.chromedriver().apply {
@@ -52,30 +58,47 @@ object Browser : Logging {
         this.socksProxy = InetSocketAddress(
                 socksProxy.split(":")[0],
                 socksProxy.split(":")[1].toInt())
-
-
     }
 
-    fun download(saveToDirectory: String) {
-        val pageInput = driver.findElementByXPath("//input[@name='currentTileNumber']")
-        val page = pageInput.getAttribute("value").toInt()
-        logger.info("page: $page")
+    data class CurrentPageMeta(
+            var currentPage: Int = -1,
+            var totalPages: Int = -1,
+            var imageSrc: String = ""
+    )
 
-        val totalPageText = driver.findElementByXPath(
-                "//*[@id='openSDPagerInputContainer2']/label[@class='afterInput']").text
-        logger.info("totalPageText: $totalPageText")
+    fun detectCurrentPageImageToDownload(): CurrentPageMeta? {
+        try {
+            val meta = CurrentPageMeta()
 
-        val totalPages = "\\d+".toRegex().find(totalPageText)!!.value.toInt()
-        logger.info("totalPages: $totalPages")
+            val pageInput = driver.findElementByXPath("//input[@name='currentTileNumber']")
+            meta.currentPage = pageInput.getAttribute("value").toInt()
+            logger.info("page: $currentPage")
 
-        val imageSrc = driver.findElementByXPath("//img[@id='printImage']").getAttribute("src")
-        logger.info("imageSrc: $imageSrc")
+            val totalPageText = driver.findElementByXPath(
+                    "//*[@id='openSDPagerInputContainer2']/label[@class='afterInput']").text
+            logger.info("totalPageText: $totalPageText")
 
-        downloadImage(imageSrc, saveToDirectory, page)
+            meta.totalPages = "\\d+".toRegex().find(totalPageText)!!.value.toInt()
+            logger.info("totalPages: $totalPages")
 
-        pageInput.clear()
-        pageInput.sendKeys((page + 1).toString(), Keys.ENTER)
+            meta.imageSrc = driver.findElementByXPath("//img[@id='printImage']").getAttribute("src")
+            logger.info("imageSrc: ${meta.imageSrc}")
 
+            return meta
+        } catch (exc: Exception) {
+            logger.warn(exc)
+        }
+        return null
+    }
+
+    fun flipToPage(page: Int) {
+        try {
+            val pageInput = driver.findElementByXPath("//input[@name='currentTileNumber']")
+            pageInput.clear()
+            pageInput.sendKeys((page + 1).toString(), Keys.ENTER)
+        } catch (exc: Exception) {
+            logger.warn(exc)
+        }
     }
 
     val httpSocketRegistry = RegistryBuilder.create<ConnectionSocketFactory>()
@@ -88,7 +111,7 @@ object Browser : Logging {
             .setConnectionManager(httpConnectionManager)
             .build();
 
-    fun downloadImage(imageSrc: String, saveToDirectory: String, page: Int) {
+    fun downloadImage(imageSrc: String, page: Int) {
         val context = HttpClientContext.create();
         context.setAttribute("socks.address", socksProxy);
 
@@ -122,38 +145,127 @@ object Browser : Logging {
             else -> ".jpg"
         }
 
-        Files.createDirectories(Paths.get(saveToDirectory))
-        val imageFile = Paths.get(saveToDirectory).resolve("image-$page.$fileExtension").toFile()
+        Files.createDirectories(saveToDirectory)
+        val imageFile = saveToDirectory
+                .resolve(FileNameMatcher.fileName(page, fileExtension))
+                .toFile()
 
         FileOutputStream(imageFile).use { file ->
             response.entity.writeTo(file)
         }
     }
 
-    fun startDownloading(saveToDirectory: String) {
-        if (!isDownloading.compareAndSet(false, true))
-            return
-
+    @Synchronized
+    fun startDownloading(saveToDirectory: Path) {
+        if (dowloadingThread != null) {
+            dowloadingThread = Thread(::downloadingProcess)
+            dowloadingThread!!.start()
+        }
     }
 
+    @Synchronized
     fun stopDownloading() {
-        if(!isDownloading.compareAndSet(true, false))
-            return
-        executor.
+        if (dowloadingThread != null) {
+            dowloadingThread!!.interrupt()
+            dowloadingThread!!.join()
+            dowloadingThread = null
+        }
     }
 
-    fun isAbleToStartDownloading(): Boolean {
-        if (isDownloading.get()) return false
-        return false
+    private fun findDownloadedFiles(): MutableSet<Int> {
+        try {
+            return Files.list(saveToDirectory)
+                    .map { FileNameMatcher.extractFileNumber(it) }
+                    .toList()
+                    .filterNotNullTo(HashSet())
+        } catch (exc: Exception) {
+            return HashSet()
+        }
+
     }
 
-    fun isAbleToStopDownloading(): Boolean {
-        if (!isDownloading.get()) return false
-        return false
+    private fun downloadingProcess() {
+        val saveToDirectory = synchronized(this) {
+            saveToDirectory
+        }
+        Files.createDirectories(saveToDirectory)
+
+        val downloadedPages = findDownloadedFiles()
+
+        while (!Thread.currentThread().isInterrupted) {
+            try {
+                var meta: CurrentPageMeta? = null
+                for (attempt in 1..10) {
+                    meta = detectCurrentPageImageToDownload()
+                    if (meta == null) {
+                        logger.info("Failed to detect current page at attempt $attempt, sleep 1s.")
+                        sleep(1000)
+                        continue
+                    }
+                }
+                if (meta == null)
+                    return
+
+                synchronized(this) {
+                    currentPage = meta.currentPage
+                    totalPages = meta.totalPages
+                }
+
+                if (!downloadedPages.contains(meta.currentPage)) {
+                    downloadImage(meta.imageSrc, meta.currentPage)
+                    downloadedPages.add(meta.currentPage)
+                }
+
+                if (downloadedPages.size < meta.totalPages) {
+                    val flipToPage = ((1..meta.totalPages).toList() - downloadedPages.toList()).min()!!
+                    flipToPage(flipToPage)
+                }
+            } catch (interruptedException: InterruptedException) {
+                return
+            } catch (exc: Exception) {
+                logger.warn(exc)
+                sleep(1000)
+            }
+        }
     }
 
-    val status: String get() {};
+    data class Status(
+            val isDownloading: Boolean,
+            val foundDownloadedFiles: Int,
+            val currentPage: Int,
+            val totalPages: Int)
 
+
+    @Synchronized
+    fun requestStatus(): Status {
+        if (dowloadingThread != null) {
+            return Status(
+                    isDownloading = dowloadingThread != null,
+                    currentPage = currentPage,
+                    totalPages = totalPages,
+                    foundDownloadedFiles = foundFiles
+
+            )
+        } else {
+            val meta = detectCurrentPageImageToDownload()
+            if (meta != null) {
+                return Status(
+                        isDownloading = false,
+                        currentPage = meta.currentPage,
+                        totalPages = meta.totalPages,
+                        foundDownloadedFiles = findDownloadedFiles().size)
+            } else {
+                return Status(
+                        isDownloading = false,
+                        currentPage = -1,
+                        totalPages = -1,
+                        foundDownloadedFiles = findDownloadedFiles().size)
+            }
+        }
+    };
+
+
+    @Synchronized
     fun close() {
         if (::driver.isInitialized) {
             driver.quit()

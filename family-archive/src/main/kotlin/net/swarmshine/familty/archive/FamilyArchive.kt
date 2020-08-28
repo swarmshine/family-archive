@@ -55,7 +55,7 @@ class FamilyArchive : JFrame() {
 
     init {
         startDownloadingBtn.addActionListener {
-            Browser.startDownloading(saveToDirectory.value)
+            Browser.startDownloading(Paths.get(saveToDirectory.value))
             startDownloadingBtn.isEnabled = false
         }
 
@@ -90,15 +90,15 @@ class FamilyArchive : JFrame() {
         setSize(500, 600)
 
         pollingBrowserStateExecutor.scheduleAtFixedRate({
-            val browserAbleToStartDownloading = Browser.isAbleToStartDownloading()
-            val browserAbleToStopDownloading = Browser.isAbleToStopDownloading()
-            val browserStatus = Browser.status
+            val browserStatus = Browser.requestStatus()
             EventQueue.invokeAndWait {
-                startDownloadingBtn.isEnabled = browserAbleToStartDownloading
-                stopDownloadingBtn.isEnabled = browserAbleToStopDownloading
-                status.text = browserStatus
+                startDownloadingBtn.isEnabled = !browserStatus.isDownloading
+                stopDownloadingBtn.isEnabled = browserStatus.isDownloading
+                status.text = "Downloaded: ${browserStatus.foundDownloadedFiles}" +
+                        ", Total: ${browserStatus.totalPages}" +
+                        ", Current: ${browserStatus.currentPage}"
             }
-        }, 1, 1, TimeUnit.SECONDS)
+        }, 3, 3, TimeUnit.SECONDS)
     }
 
     fun releaseResources() {
