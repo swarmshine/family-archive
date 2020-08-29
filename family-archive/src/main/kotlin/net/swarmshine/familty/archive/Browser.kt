@@ -2,6 +2,7 @@ package net.swarmshine.familty.archive
 
 import io.github.bonigarcia.wdm.WebDriverManager
 import org.apache.hc.client5.http.classic.methods.HttpGet
+import org.apache.hc.client5.http.config.RequestConfig
 import org.apache.hc.client5.http.cookie.BasicCookieStore
 import org.apache.hc.client5.http.impl.classic.HttpClients
 import org.apache.hc.client5.http.impl.cookie.BasicClientCookie
@@ -19,6 +20,7 @@ import org.openqa.selenium.Keys
 import org.openqa.selenium.chrome.ChromeDriver
 import org.openqa.selenium.chrome.ChromeOptions
 import java.io.FileOutputStream
+import java.lang.IllegalStateException
 import java.lang.Thread.sleep
 import java.net.InetSocketAddress
 import java.net.Proxy
@@ -26,6 +28,7 @@ import java.net.Socket
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLContext
 import kotlin.streams.toList
 
@@ -74,17 +77,13 @@ object Browser : Logging {
 
             val pageInput = driver.findElementByXPath("//input[@name='currentTileNumber']")
             meta.currentPage = pageInput.getAttribute("value").toInt()
-            logger.info("page: $currentPage")
 
             val totalPageText = driver.findElementByXPath(
                     "//*[@id='openSDPagerInputContainer2']/label[@class='afterInput']").text
-            logger.info("totalPageText: $totalPageText")
 
             meta.totalPages = "\\d+".toRegex().find(totalPageText)!!.value.toInt()
-            logger.info("totalPages: $totalPages")
 
             meta.imageSrc = driver.findElementByXPath("//img[@id='printImage']").getAttribute("src")
-            logger.info("imageSrc: ${meta.imageSrc}")
 
             return meta
         } catch (exc: Exception) {
@@ -95,9 +94,10 @@ object Browser : Logging {
 
     fun flipToPage(page: Int) {
         try {
+            logger.info("Flip to page: $page")
             val pageInput = driver!!.findElementByXPath("//input[@name='currentTileNumber']")
             pageInput.clear()
-            pageInput.sendKeys((page + 1).toString(), Keys.ENTER)
+            pageInput.sendKeys((page).toString(), Keys.ENTER)
         } catch (exc: Exception) {
             logger.warn(exc)
         }
@@ -111,6 +111,11 @@ object Browser : Logging {
     val httpConnectionManager = PoolingHttpClientConnectionManager(httpSocketRegistry);
     val httpClient = HttpClients.custom()
             .setConnectionManager(httpConnectionManager)
+            .setDefaultRequestConfig(RequestConfig.custom()
+                    .setConnectTimeout(10, TimeUnit.SECONDS)
+                    .setConnectionRequestTimeout(30, TimeUnit.SECONDS)
+                    .setResponseTimeout(60, TimeUnit.SECONDS)
+                    .build())
             .build();
 
     fun downloadImage(imageSrc: String, page: Int) {
@@ -132,35 +137,39 @@ object Browser : Logging {
         }.forEach { cookieStore.addCookie(it) }
         context.cookieStore = cookieStore
 
-        val response = httpClient.execute(request, context)
-        logger.info("response: ${response.code}")
+        httpClient.execute(request, context).use { response ->
+            logger.info("response: ${response.code}")
+            if (response.code != 200) {
+                throw IllegalStateException("Failed to download image")
+            }
 
-        val contentType = response.getHeader("content-type")?.value ?: ""
-        val fileExtension = when {
-            contentType.contains("jpg") -> ".jpg"
-            contentType.contains("jpeg") -> ".jpg"
-            contentType.contains("png") -> ".png"
-            contentType.contains("gif") -> ".gif"
-            contentType.contains("gif") -> ".gif"
-            contentType.contains("tiff") -> ".tiff"
-            contentType.contains("webp") -> ".webp"
-            else -> ".jpg"
-        }
+            val contentType = response.getHeader("content-type")?.value ?: ""
+            val fileExtension = when {
+                contentType.contains("jpg") -> ".jpg"
+                contentType.contains("jpeg") -> ".jpg"
+                contentType.contains("png") -> ".png"
+                contentType.contains("gif") -> ".gif"
+                contentType.contains("gif") -> ".gif"
+                contentType.contains("tiff") -> ".tiff"
+                contentType.contains("webp") -> ".webp"
+                else -> ".jpg"
+            }
 
-        Files.createDirectories(saveToDirectory)
-        val imageFile = saveToDirectory
-                .resolve(FileNameMatcher.fileName(page, fileExtension))
-                .toFile()
+            Files.createDirectories(saveToDirectory)
+            val imageFile = saveToDirectory
+                    .resolve(FileNameMatcher.fileName(page, fileExtension))
+                    .toFile()
 
-        FileOutputStream(imageFile).use { file ->
-            response.entity.writeTo(file)
+            FileOutputStream(imageFile).use { file ->
+                response.entity.writeTo(file)
+            }
         }
     }
 
     @Synchronized
     fun startDownloading(saveToDirectory: Path) {
-        this.saveToDirectory = saveToDirectory
-        if (dowloadingThread != null) {
+        if (dowloadingThread == null) {
+            this.saveToDirectory = saveToDirectory
             dowloadingThread = Thread(::downloadingProcess)
             dowloadingThread!!.start()
         }
@@ -191,23 +200,28 @@ object Browser : Logging {
         val saveToDirectory = synchronized(this) {
             saveToDirectory
         }
+        logger.info("Start downloading to $saveToDirectory")
         Files.createDirectories(saveToDirectory)
 
         val downloadedPages = findDownloadedFiles()
+        this.foundFiles = downloadedPages.size
+        logger.info("Downloaded pages: $downloadedPages")
 
         while (!Thread.currentThread().isInterrupted) {
             try {
                 var meta: CurrentPageMeta? = null
                 for (attempt in 1..10) {
                     meta = detectCurrentPageImageToDownload()
-                    if (meta == null) {
-                        logger.info("Failed to detect current page at attempt $attempt, sleep 1s.")
-                        sleep(1000)
-                        continue
-                    }
+                    if (meta != null)
+                        break
+
+                    logger.info("Failed to detect current page at attempt $attempt, sleep 1s.")
+                    sleep(1000)
                 }
-                if (meta == null)
-                    return
+                if (meta == null) {
+                    logger.error("Failed to detect current page, abort downloading.")
+                    break
+                }
 
                 synchronized(this) {
                     currentPage = meta.currentPage
@@ -217,18 +231,27 @@ object Browser : Logging {
                 if (!downloadedPages.contains(meta.currentPage)) {
                     downloadImage(meta.imageSrc, meta.currentPage)
                     downloadedPages.add(meta.currentPage)
+                    this.foundFiles = downloadedPages.size
                 }
 
                 if (downloadedPages.size < meta.totalPages) {
-                    val flipToPage = ((1..meta.totalPages).toList() - downloadedPages.toList()).min()!!
+                    val flipToPage = ((1..meta.totalPages) - downloadedPages).min()!!
                     flipToPage(flipToPage)
                 }
             } catch (interruptedException: InterruptedException) {
-                return
+                break
             } catch (exc: Exception) {
                 logger.warn(exc)
                 sleep(1000)
             }
+            logger.info("Sleep to work around 429 Too Many Request")
+            sleep(1000)
+        }
+        synchronized(this) {
+            this.dowloadingThread = null
+            this.currentPage = -1
+            this.totalPages = -1
+            this.foundFiles = -1
         }
     }
 
