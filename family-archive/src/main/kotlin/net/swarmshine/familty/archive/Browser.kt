@@ -252,7 +252,7 @@ object Browser : Logging {
             }
 
             val delayBetweenRequests = synchronized(this) { delayBetweenRequests }
-            logger.info("Sleep for $delayBetweenRequests to work around 429 Too Many Request")
+            logger.info("Delay next request for $delayBetweenRequests")
             sleep(delayBetweenRequests)
         }
         synchronized(this) {
