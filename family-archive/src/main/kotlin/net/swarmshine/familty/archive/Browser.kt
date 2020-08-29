@@ -29,6 +29,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import javax.net.ssl.SSLContext
 import kotlin.streams.toList
 
@@ -42,6 +43,7 @@ object Browser : Logging {
     private var currentPage = 0
     private var foundFiles = 0
     private var saveToDirectory: Path = Paths.get("download")
+    private var delayBetweenRequests = 1000L
     private var socksProxy: InetSocketAddress? = null
 
     @Synchronized
@@ -167,9 +169,10 @@ object Browser : Logging {
     }
 
     @Synchronized
-    fun startDownloading(saveToDirectory: Path) {
+    fun startDownloading(saveToDirectory: Path, delayBetweenRequests: Long) {
         if (dowloadingThread == null) {
             this.saveToDirectory = saveToDirectory
+            this.delayBetweenRequests = delayBetweenRequests
             dowloadingThread = Thread(::downloadingProcess)
             dowloadingThread!!.start()
         }
@@ -242,10 +245,11 @@ object Browser : Logging {
                 break
             } catch (exc: Exception) {
                 logger.warn(exc)
-                sleep(1000)
             }
-            logger.info("Sleep to work around 429 Too Many Request")
-            sleep(1000)
+
+            val delayBetweenRequests = synchronized(this) { delayBetweenRequests }
+            logger.info("Sleep for $delayBetweenRequests to work around 429 Too Many Request")
+            sleep(delayBetweenRequests)
         }
         synchronized(this) {
             this.dowloadingThread = null
