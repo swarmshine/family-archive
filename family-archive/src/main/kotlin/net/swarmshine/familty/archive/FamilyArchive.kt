@@ -30,7 +30,7 @@ class FamilyArchive : JFrame() {
     val delayBetweenRequests = PreferenceWidget(
             identity = "delayBetweenRequest",
             toolTip = "milliseconds",
-            defaultValue = "1000"
+            defaultValue = "0"
     )
 
 

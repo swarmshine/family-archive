@@ -4,8 +4,10 @@ import io.github.bonigarcia.wdm.WebDriverManager
 import org.apache.hc.client5.http.classic.methods.HttpGet
 import org.apache.hc.client5.http.config.RequestConfig
 import org.apache.hc.client5.http.cookie.BasicCookieStore
+import org.apache.hc.client5.http.impl.DefaultHttpRequestRetryStrategy
 import org.apache.hc.client5.http.impl.classic.HttpClients
 import org.apache.hc.client5.http.impl.cookie.BasicClientCookie
+import org.apache.hc.client5.http.impl.io.BasicHttpClientConnectionManager
 import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManager
 import org.apache.hc.client5.http.protocol.HttpClientContext
 import org.apache.hc.client5.http.socket.ConnectionSocketFactory
@@ -14,6 +16,7 @@ import org.apache.hc.client5.http.ssl.SSLConnectionSocketFactory
 import org.apache.hc.core5.http.config.RegistryBuilder
 import org.apache.hc.core5.http.protocol.HttpContext
 import org.apache.hc.core5.ssl.SSLContexts
+import org.apache.hc.core5.util.TimeValue
 import org.apache.http.cookie.ClientCookie
 import org.apache.logging.log4j.kotlin.Logging
 import org.openqa.selenium.Keys
@@ -43,7 +46,7 @@ object Browser : Logging {
     private var currentPage = 0
     private var foundFiles = 0
     private var saveToDirectory: Path = Paths.get("download")
-    private var delayBetweenRequests = 1000L
+    private var delayBetweenRequests = 0L
     private var socksProxy: InetSocketAddress? = null
 
     @Synchronized
@@ -110,7 +113,8 @@ object Browser : Logging {
             .register("https", MyConnectionSocketFactory(SSLContexts.createSystemDefault()))
             .build();
 
-    val httpConnectionManager = PoolingHttpClientConnectionManager(httpSocketRegistry);
+//    val httpConnectionManager = PoolingHttpClientConnectionManager(httpSocketRegistry);
+    val httpConnectionManager = BasicHttpClientConnectionManager(httpSocketRegistry);
     val httpClient = HttpClients.custom()
             .setConnectionManager(httpConnectionManager)
             .setDefaultRequestConfig(RequestConfig.custom()
@@ -118,6 +122,7 @@ object Browser : Logging {
                     .setConnectionRequestTimeout(30, TimeUnit.SECONDS)
                     .setResponseTimeout(60, TimeUnit.SECONDS)
                     .build())
+            .setRetryStrategy(DefaultHttpRequestRetryStrategy(0, TimeValue.ofSeconds(1L)))
             .build();
 
     fun downloadImage(imageSrc: String, page: Int) {
@@ -178,13 +183,12 @@ object Browser : Logging {
         }
     }
 
-    @Synchronized
     fun stopDownloading() {
-        if (dowloadingThread != null) {
-            dowloadingThread!!.interrupt()
-            dowloadingThread!!.join()
-            dowloadingThread = null
+        val threadToInterrupt = synchronized(this){
+            dowloadingThread.also { dowloadingThread = null }
         }
+        threadToInterrupt?.interrupt()
+        threadToInterrupt?.join()
     }
 
     private fun findDownloadedFiles(): MutableSet<Int> {
