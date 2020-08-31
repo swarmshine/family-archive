@@ -4,11 +4,10 @@ import io.github.bonigarcia.wdm.WebDriverManager
 import org.apache.hc.client5.http.classic.methods.HttpGet
 import org.apache.hc.client5.http.config.RequestConfig
 import org.apache.hc.client5.http.cookie.BasicCookieStore
-import org.apache.hc.client5.http.impl.DefaultHttpRequestRetryStrategy
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient
 import org.apache.hc.client5.http.impl.classic.HttpClients
 import org.apache.hc.client5.http.impl.cookie.BasicClientCookie
 import org.apache.hc.client5.http.impl.io.BasicHttpClientConnectionManager
-import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManager
 import org.apache.hc.client5.http.protocol.HttpClientContext
 import org.apache.hc.client5.http.socket.ConnectionSocketFactory
 import org.apache.hc.client5.http.socket.PlainConnectionSocketFactory
@@ -16,7 +15,6 @@ import org.apache.hc.client5.http.ssl.SSLConnectionSocketFactory
 import org.apache.hc.core5.http.config.RegistryBuilder
 import org.apache.hc.core5.http.protocol.HttpContext
 import org.apache.hc.core5.ssl.SSLContexts
-import org.apache.hc.core5.util.TimeValue
 import org.apache.http.cookie.ClientCookie
 import org.apache.logging.log4j.kotlin.Logging
 import org.openqa.selenium.Keys
@@ -32,7 +30,9 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.SSLContext
 import kotlin.streams.toList
 
@@ -40,16 +40,15 @@ import kotlin.streams.toList
 object Browser : Logging {
     var driver: ChromeDriver? = null
 
-    private var dowloadingThread: Thread? = null
+    private var downloadingThread = AtomicReference<Thread?>()
+    private var totalPages = AtomicInteger()
+    private var currentPage = AtomicInteger()
+    private var foundFiles = AtomicInteger()
+    private var saveToDirectory = AtomicReference<Path>(Paths.get("download"))
+    private var delayBeforeDownload = AtomicLong()
 
-    private var totalPages = 0
-    private var currentPage = 0
-    private var foundFiles = 0
-    private var saveToDirectory: Path = Paths.get("download")
-    private var delayBetweenRequests = 0L
     private var socksProxy: InetSocketAddress? = null
 
-    @Synchronized
     fun launch(socksProxy: String,
                startUrl: String) {
         WebDriverManager.chromedriver().apply {
@@ -113,19 +112,24 @@ object Browser : Logging {
             .register("https", MyConnectionSocketFactory(SSLContexts.createSystemDefault()))
             .build();
 
+    fun buildHttpClient(): CloseableHttpClient {
 //    val httpConnectionManager = PoolingHttpClientConnectionManager(httpSocketRegistry);
-    val httpConnectionManager = BasicHttpClientConnectionManager(httpSocketRegistry);
-    val httpClient = HttpClients.custom()
-            .setConnectionManager(httpConnectionManager)
-            .setDefaultRequestConfig(RequestConfig.custom()
-                    .setConnectTimeout(10, TimeUnit.SECONDS)
-                    .setConnectionRequestTimeout(30, TimeUnit.SECONDS)
-                    .setResponseTimeout(60, TimeUnit.SECONDS)
-                    .build())
-            .setRetryStrategy(DefaultHttpRequestRetryStrategy(0, TimeValue.ofSeconds(1L)))
-            .build();
+        val httpConnectionManager = BasicHttpClientConnectionManager(httpSocketRegistry);
 
-    fun downloadImage(imageSrc: String, page: Int) {
+        val httpClient = HttpClients.custom()
+                .setConnectionManager(httpConnectionManager)
+                .setDefaultRequestConfig(RequestConfig.custom()
+                        .setConnectTimeout(10, TimeUnit.SECONDS)
+                        .setConnectionRequestTimeout(30, TimeUnit.SECONDS)
+                        .setResponseTimeout(60, TimeUnit.SECONDS)
+                        .build())
+                .build();
+
+        return httpClient
+    }
+
+
+    fun downloadImage(imageSrc: String, page: Int, httpClient: CloseableHttpClient) {
         val context = HttpClientContext.create();
         context.setAttribute("socks.address", socksProxy);
 
@@ -162,8 +166,8 @@ object Browser : Logging {
                 else -> ".jpg"
             }
 
-            Files.createDirectories(saveToDirectory)
-            val imageFile = saveToDirectory
+            Files.createDirectories(saveToDirectory.get())
+            val imageFile = saveToDirectory.get()
                     .resolve(FileNameMatcher.fileName(page, fileExtension))
                     .toFile()
 
@@ -173,27 +177,25 @@ object Browser : Logging {
         }
     }
 
-    @Synchronized
-    fun startDownloading(saveToDirectory: Path, delayBetweenRequests: Long) {
-        if (dowloadingThread == null) {
-            this.saveToDirectory = saveToDirectory
-            this.delayBetweenRequests = delayBetweenRequests
-            dowloadingThread = Thread(::downloadingProcess)
-            dowloadingThread!!.start()
+    fun startDownloading(saveToDirectory: Path, delayBeforeDownload: Long) {
+        val newThread = Thread(::downloadingProcess)
+
+        if (downloadingThread.compareAndSet(null, newThread)) {
+            this.saveToDirectory.set(saveToDirectory)
+            this.delayBeforeDownload.set(delayBeforeDownload)
+            newThread.start()
         }
     }
 
     fun stopDownloading() {
-        val threadToInterrupt = synchronized(this){
-            dowloadingThread.also { dowloadingThread = null }
-        }
-        threadToInterrupt?.interrupt()
-        threadToInterrupt?.join()
+        val activeThread = downloadingThread.getAndSet(null) ?: return
+        activeThread.interrupt()
+        activeThread.join()
     }
 
     private fun findDownloadedFiles(): MutableSet<Int> {
         try {
-            return Files.list(saveToDirectory)
+            return Files.list(saveToDirectory.get())
                     .map { FileNameMatcher.extractFileNumber(it) }
                     .toList()
                     .filterNotNullTo(HashSet())
@@ -204,63 +206,64 @@ object Browser : Logging {
     }
 
     private fun downloadingProcess() {
-        val saveToDirectory = synchronized(this) {
-            saveToDirectory
-        }
-        logger.info("Start downloading to $saveToDirectory")
-        Files.createDirectories(saveToDirectory)
+        logger.info("Start downloading to ${saveToDirectory.get()}")
+        Files.createDirectories(saveToDirectory.get())
 
         val downloadedPages = findDownloadedFiles()
-        this.foundFiles = downloadedPages.size
+        this.foundFiles.set(downloadedPages.size)
         logger.info("Downloaded pages: $downloadedPages")
 
-        while (!Thread.currentThread().isInterrupted) {
-            try {
-                var meta: CurrentPageMeta? = null
-                for (attempt in 1..10) {
-                    meta = detectCurrentPageImageToDownload()
-                    if (meta != null)
-                        break
+        buildHttpClient().use { httpClient ->
 
-                    logger.info("Failed to detect current page at attempt $attempt, sleep 1s.")
+            while (!Thread.currentThread().isInterrupted && downloadingThread.get() != null) {
+                try {
+                    var meta: CurrentPageMeta? = null
+                    for (attempt in 1..10) {
+                        meta = detectCurrentPageImageToDownload()
+                        if (meta != null)
+                            break
+
+                        logger.info("Failed to detect current page at attempt $attempt, sleep 1s.")
+                        sleep(1000)
+                    }
+                    if (meta == null) {
+                        logger.error("Failed to detect current page, abort downloading.")
+                        break
+                    }
+
+                    currentPage.set(meta.currentPage)
+                    totalPages.set(meta.totalPages)
+
+                    if (!downloadedPages.contains(meta.currentPage)) {
+                        delayBeforeDownload.get().let {
+                            if(it > 0){
+                                logger.info("Sleep for $it before download image")
+                                sleep(it)
+                            }
+                        }
+                        downloadImage(meta.imageSrc, meta.currentPage, httpClient)
+                        downloadedPages.add(meta.currentPage)
+                        this.foundFiles.set(downloadedPages.size)
+                    }
+
+                    if (downloadedPages.size < meta.totalPages) {
+                        val flipToPage = ((1..meta.totalPages) - downloadedPages).min()!!
+                        flipToPage(flipToPage)
+                        sleep(1000)
+                    }
+                } catch (interruptedException: InterruptedException) {
+                    break
+                } catch (exc: Exception) {
+                    logger.warn(exc)
                     sleep(1000)
                 }
-                if (meta == null) {
-                    logger.error("Failed to detect current page, abort downloading.")
-                    break
-                }
-
-                synchronized(this) {
-                    currentPage = meta.currentPage
-                    totalPages = meta.totalPages
-                }
-
-                if (!downloadedPages.contains(meta.currentPage)) {
-                    downloadImage(meta.imageSrc, meta.currentPage)
-                    downloadedPages.add(meta.currentPage)
-                    this.foundFiles = downloadedPages.size
-                }
-
-                if (downloadedPages.size < meta.totalPages) {
-                    val flipToPage = ((1..meta.totalPages) - downloadedPages).min()!!
-                    flipToPage(flipToPage)
-                }
-            } catch (interruptedException: InterruptedException) {
-                break
-            } catch (exc: Exception) {
-                logger.warn(exc)
             }
+        }
 
-            val delayBetweenRequests = synchronized(this) { delayBetweenRequests }
-            logger.info("Delay next request for $delayBetweenRequests")
-            sleep(delayBetweenRequests)
-        }
-        synchronized(this) {
-            this.dowloadingThread = null
-            this.currentPage = -1
-            this.totalPages = -1
-            this.foundFiles = -1
-        }
+        this.downloadingThread.set(null)
+        this.currentPage.set(-1)
+        this.totalPages.set(-1)
+        this.foundFiles.set(-1)
     }
 
     data class Status(
@@ -271,15 +274,14 @@ object Browser : Logging {
             val totalPages: Int)
 
 
-    @Synchronized
     fun requestStatus(): Status {
-        if (dowloadingThread != null) {
+        if (downloadingThread.get() != null) {
             return Status(
-                    isDownloading = dowloadingThread != null,
+                    isDownloading = true,
                     filmViewIsOpen = true,
-                    currentPage = currentPage,
-                    totalPages = totalPages,
-                    foundDownloadedFiles = foundFiles
+                    currentPage = currentPage.get(),
+                    totalPages = totalPages.get(),
+                    foundDownloadedFiles = foundFiles.get()
 
             )
         } else {
@@ -302,7 +304,6 @@ object Browser : Logging {
         }
     }
 
-    @Synchronized
     fun close() {
         if (driver != null) {
             driver!!.quit()

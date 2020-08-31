@@ -27,10 +27,10 @@ class FamilyArchive : JFrame() {
             toolTip = "/some/directory",
             defaultValue = Paths.get("family-archive").toAbsolutePath().toString())
 
-    val delayBetweenRequests = PreferenceWidget(
-            identity = "delayBetweenRequest",
+    val delayBeforeDownload = PreferenceWidget(
+            identity = "delayBeforeDownload",
             toolTip = "milliseconds",
-            defaultValue = "0"
+            defaultValue = "5000"
     )
 
 
@@ -64,7 +64,7 @@ class FamilyArchive : JFrame() {
 
     init {
         startDownloadingBtn.addActionListener {
-            Browser.startDownloading(Paths.get(saveToDirectory.value), delayBetweenRequests.value.toLong())
+            Browser.startDownloading(Paths.get(saveToDirectory.value), delayBeforeDownload.value.toLong())
             startDownloadingBtn.isEnabled = false
         }
 
@@ -81,7 +81,7 @@ class FamilyArchive : JFrame() {
             add(socksProxy)
             add(startUrl)
             add(saveToDirectory)
-            add(delayBetweenRequests)
+            add(delayBeforeDownload)
             add(launchBrowserBtn)
             add(startDownloadingBtn)
             add(stopDownloadingBtn)
