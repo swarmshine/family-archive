@@ -30,7 +30,7 @@ class FamilyArchive : JFrame() {
     val delayBeforeDownload = PreferenceWidget(
             identity = "delayBeforeDownload",
             toolTip = "milliseconds",
-            defaultValue = "5000"
+            defaultValue = "0"
     )
 
 

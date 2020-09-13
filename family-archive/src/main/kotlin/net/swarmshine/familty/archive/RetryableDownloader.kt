@@ -17,13 +17,18 @@ class RetryableDownloader (
 
     private var previousDownloadWasSuccessful = true
 
-    private var httpClient = httpClientFactory()
+    private var httpClient: CloseableHttpClient? = null
 
     fun download(
             downloadImageAction: (CloseableHttpClient)->DownloadResult,
             switchFilmViewerToFirstPageAction: ()->Unit){
+
+        if (httpClient == null) {
+            httpClient = httpClientFactory()
+        }
+
         for (attempt in 1..ATTEMPTS_COUNT) {
-            when (val downloadResult = downloadImageAction(httpClient)) {
+            when (val downloadResult = downloadImageAction(httpClient!!)) {
                 is SuccessDownloadResult -> {
                     previousDownloadWasSuccessful = true
                     return
@@ -46,12 +51,12 @@ class RetryableDownloader (
     }
 
     private fun restartHttpClient() {
-        httpClient.close()
+        httpClient?.close()
         httpClient = httpClientFactory()
     }
 
 
     override fun close() {
-        httpClient.close()
+        httpClient?.close()
     }
 }

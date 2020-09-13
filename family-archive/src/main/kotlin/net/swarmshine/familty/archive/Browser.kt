@@ -124,7 +124,7 @@ object Browser : Logging {
                         .setConnectionRequestTimeout(30, TimeUnit.SECONDS)
                         .setResponseTimeout(60, TimeUnit.SECONDS)
                         .build())
-                .setRetryStrategy(DefaultHttpRequestRetryStrategy(-1, TimeValue.ofSeconds(1)))
+                .setRetryStrategy(DefaultHttpRequestRetryStrategy(0, TimeValue.ofSeconds(1)))
                 .build();
         return httpClient
     }

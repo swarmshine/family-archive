@@ -1,9 +1,20 @@
+import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
 import org.gradle.kotlin.dsl.*
-
 
 plugins {
     java
     kotlin("jvm")
+    id("com.github.johnrengelman.shadow") version "6.0.0"
+    application
+}
+
+application {
+    mainClassName = "net.swarmshine.familty.archive.FamilyArchiveKt"
+}
+
+tasks.withType<ShadowJar>{
+    archiveVersion.set("")
+    archiveClassifier.set("")
 }
 
 dependencies {
@@ -35,3 +46,4 @@ dependencies {
     testImplementation(Libs.mockk)
 
 }
+
