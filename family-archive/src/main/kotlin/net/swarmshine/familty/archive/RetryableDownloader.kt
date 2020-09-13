@@ -2,7 +2,13 @@ package net.swarmshine.familty.archive
 
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient
 
-class DownloadStrategy (
+sealed class DownloadResult
+class SuccessDownloadResult(): DownloadResult()
+class TooManyRequestsDownloadResult(val timeout: Long): DownloadResult()
+class ErrorDownloadResult(): DownloadResult()
+
+
+class RetryableDownloader (
         private val httpClientFactory: ()-> CloseableHttpClient
 ): AutoCloseable {
     companion object {
@@ -10,24 +16,28 @@ class DownloadStrategy (
     }
 
     private var previousDownloadWasSuccessful = true
+
     private var httpClient = httpClientFactory()
 
-    fun downloadImage(){
+    fun download(
+            downloadImageAction: (CloseableHttpClient)->DownloadResult,
+            switchFilmViewerToFirstPageAction: ()->Unit){
         for (attempt in 1..ATTEMPTS_COUNT) {
-            when (val downloadResult = downloadImageByUrl()) {
-                is Success -> {
+            when (val downloadResult = downloadImageAction(httpClient)) {
+                is SuccessDownloadResult -> {
                     previousDownloadWasSuccessful = true
                     return
                 }
-                is TooManyRequests -> {
+                is TooManyRequestsDownloadResult -> {
                     if (previousDownloadWasSuccessful) {
                         restartHttpClient()
+                        switchFilmViewerToFirstPageAction()
                     } else {
                         Thread.sleep(downloadResult.timeout)
                         restartHttpClient()
                     }
                 }
-                is Error -> {
+                is ErrorDownloadResult -> {
                     previousDownloadWasSuccessful = false
                 }
             }
@@ -40,14 +50,6 @@ class DownloadStrategy (
         httpClient = httpClientFactory()
     }
 
-    open class DownloadResult
-    sealed class Success: DownloadResult()
-    sealed class TooManyRequests(val timeout: Long): DownloadResult()
-    sealed class Error: DownloadResult()
-
-    fun downloadImageByUrl(): DownloadResult {
-        TODO()
-    }
 
     override fun close() {
         httpClient.close()

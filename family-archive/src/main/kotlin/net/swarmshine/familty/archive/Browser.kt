@@ -4,6 +4,7 @@ import io.github.bonigarcia.wdm.WebDriverManager
 import org.apache.hc.client5.http.classic.methods.HttpGet
 import org.apache.hc.client5.http.config.RequestConfig
 import org.apache.hc.client5.http.cookie.BasicCookieStore
+import org.apache.hc.client5.http.impl.DefaultHttpRequestRetryStrategy
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient
 import org.apache.hc.client5.http.impl.classic.HttpClients
 import org.apache.hc.client5.http.impl.cookie.BasicClientCookie
@@ -15,6 +16,7 @@ import org.apache.hc.client5.http.ssl.SSLConnectionSocketFactory
 import org.apache.hc.core5.http.config.RegistryBuilder
 import org.apache.hc.core5.http.protocol.HttpContext
 import org.apache.hc.core5.ssl.SSLContexts
+import org.apache.hc.core5.util.TimeValue
 import org.apache.http.cookie.ClientCookie
 import org.apache.logging.log4j.kotlin.Logging
 import org.openqa.selenium.Keys
@@ -49,8 +51,9 @@ object Browser : Logging {
 
     private var socksProxy: InetSocketAddress? = null
 
-    fun launch(socksProxy: String,
-               startUrl: String) {
+    private val retryableDownloader = RetryableDownloader(httpClientFactory = ::buildHttpClient)
+
+    fun launch(socksProxy: String, startUrl: String) {
         WebDriverManager.chromedriver().apply {
             setup()
         }
@@ -113,9 +116,7 @@ object Browser : Logging {
             .build();
 
     fun buildHttpClient(): CloseableHttpClient {
-//    val httpConnectionManager = PoolingHttpClientConnectionManager(httpSocketRegistry);
         val httpConnectionManager = BasicHttpClientConnectionManager(httpSocketRegistry);
-
         val httpClient = HttpClients.custom()
                 .setConnectionManager(httpConnectionManager)
                 .setDefaultRequestConfig(RequestConfig.custom()
@@ -123,13 +124,13 @@ object Browser : Logging {
                         .setConnectionRequestTimeout(30, TimeUnit.SECONDS)
                         .setResponseTimeout(60, TimeUnit.SECONDS)
                         .build())
+                .setRetryStrategy(DefaultHttpRequestRetryStrategy(-1, TimeValue.ofSeconds(1)))
                 .build();
-
         return httpClient
     }
 
 
-    fun downloadImage(imageSrc: String, page: Int, httpClient: CloseableHttpClient) {
+    fun downloadImage(imageSrc: String, page: Int, httpClient: CloseableHttpClient): DownloadResult {
         val context = HttpClientContext.create();
         context.setAttribute("socks.address", socksProxy);
 
@@ -150,8 +151,17 @@ object Browser : Logging {
 
         httpClient.execute(request, context).use { response ->
             logger.info("response: ${response.code}")
+
+            if (response.code == 429) {
+                return TooManyRequestsDownloadResult(
+                        DefaultHttpRequestRetryStrategy.INSTANCE
+                                .getRetryInterval(response, 0, context)
+                                .toMilliseconds()
+                )
+            }
+
             if (response.code != 200) {
-                throw IllegalStateException("Failed to download image")
+                return ErrorDownloadResult()
             }
 
             val contentType = response.getHeader("content-type")?.value ?: ""
@@ -174,6 +184,8 @@ object Browser : Logging {
             FileOutputStream(imageFile).use { file ->
                 response.entity.writeTo(file)
             }
+
+            return SuccessDownloadResult()
         }
     }
 
@@ -213,52 +225,60 @@ object Browser : Logging {
         this.foundFiles.set(downloadedPages.size)
         logger.info("Downloaded pages: $downloadedPages")
 
-        buildHttpClient().use { httpClient ->
 
-            while (!Thread.currentThread().isInterrupted && downloadingThread.get() != null) {
-                try {
-                    var meta: CurrentPageMeta? = null
-                    for (attempt in 1..10) {
-                        meta = detectCurrentPageImageToDownload()
-                        if (meta != null)
-                            break
 
-                        logger.info("Failed to detect current page at attempt $attempt, sleep 1s.")
-                        sleep(1000)
-                    }
-                    if (meta == null) {
-                        logger.error("Failed to detect current page, abort downloading.")
+        while (!Thread.currentThread().isInterrupted && downloadingThread.get() != null) {
+            try {
+                var meta: CurrentPageMeta? = null
+                for (attempt in 1..10) {
+                    meta = detectCurrentPageImageToDownload()
+                    if (meta != null)
                         break
-                    }
 
-                    currentPage.set(meta.currentPage)
-                    totalPages.set(meta.totalPages)
-
-                    if (!downloadedPages.contains(meta.currentPage)) {
-                        delayBeforeDownload.get().let {
-                            if(it > 0){
-                                logger.info("Sleep for $it before download image")
-                                sleep(it)
-                            }
-                        }
-                        downloadImage(meta.imageSrc, meta.currentPage, httpClient)
-                        downloadedPages.add(meta.currentPage)
-                        this.foundFiles.set(downloadedPages.size)
-                    }
-
-                    if (downloadedPages.size < meta.totalPages) {
-                        val flipToPage = ((1..meta.totalPages) - downloadedPages).min()!!
-                        flipToPage(flipToPage)
-                        sleep(1000)
-                    }
-                } catch (interruptedException: InterruptedException) {
-                    break
-                } catch (exc: Exception) {
-                    logger.warn(exc)
+                    logger.info("Failed to detect current page at attempt $attempt, sleep 1s.")
                     sleep(1000)
                 }
+                if (meta == null) {
+                    logger.error("Failed to detect current page, abort downloading.")
+                    break
+                }
+
+                currentPage.set(meta.currentPage)
+                totalPages.set(meta.totalPages)
+
+                if (!downloadedPages.contains(meta.currentPage)) {
+                    delayBeforeDownload.get().let {
+                        if (it > 0) {
+                            logger.info("Sleep for $it before download image")
+                            sleep(it)
+                        }
+                    }
+
+                    retryableDownloader.download(
+                            downloadImageAction = { httpClient ->
+                                downloadImage(meta.imageSrc, meta.currentPage, httpClient)
+                            },
+                            switchFilmViewerToFirstPageAction = {
+                                flipToPage(1)
+                            })
+
+                    downloadedPages.add(meta.currentPage)
+                    this.foundFiles.set(downloadedPages.size)
+                }
+
+                if (downloadedPages.size < meta.totalPages) {
+                    val flipToPage = ((1..meta.totalPages) - downloadedPages).min()!!
+                    flipToPage(flipToPage)
+                    sleep(1000)
+                }
+            } catch (interruptedException: InterruptedException) {
+                break
+            } catch (exc: Exception) {
+                logger.warn(exc)
+                sleep(1000)
             }
         }
+
 
         this.downloadingThread.set(null)
         this.currentPage.set(-1)
