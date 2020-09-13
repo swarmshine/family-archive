@@ -1,6 +1,7 @@
 package net.swarmshine.familty.archive
 
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient
+import org.apache.logging.log4j.kotlin.Logging
 
 sealed class DownloadResult
 class SuccessDownloadResult(): DownloadResult()
@@ -11,7 +12,7 @@ class ErrorDownloadResult(): DownloadResult()
 class RetryableDownloader (
         private val httpClientFactory: ()-> CloseableHttpClient
 ): AutoCloseable {
-    companion object {
+    companion object: Logging {
         private val ATTEMPTS_COUNT = 5
     }
 
@@ -35,9 +36,11 @@ class RetryableDownloader (
                 }
                 is TooManyRequestsDownloadResult -> {
                     if (previousDownloadWasSuccessful) {
+                        logger.warn("TooManyRequests, restarting http client")
                         restartHttpClient()
                         switchFilmViewerToFirstPageAction()
                     } else {
+                        logger.warn("TooManyRequests, sleeping for ${downloadResult.timeout}")
                         Thread.sleep(downloadResult.timeout)
                         restartHttpClient()
                     }

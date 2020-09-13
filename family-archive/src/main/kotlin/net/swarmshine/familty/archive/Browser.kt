@@ -46,7 +46,7 @@ object Browser : Logging {
     private var totalPages = AtomicInteger()
     private var currentPage = AtomicInteger()
     private var foundFiles = AtomicInteger()
-    private var saveToDirectory = AtomicReference<Path>(Paths.get("download"))
+    private var saveToDirectory = AtomicReference<Path>()
     private var delayBeforeDownload = AtomicLong()
 
     private var socksProxy: InetSocketAddress? = null
@@ -166,14 +166,14 @@ object Browser : Logging {
 
             val contentType = response.getHeader("content-type")?.value ?: ""
             val fileExtension = when {
-                contentType.contains("jpg") -> ".jpg"
-                contentType.contains("jpeg") -> ".jpg"
-                contentType.contains("png") -> ".png"
-                contentType.contains("gif") -> ".gif"
-                contentType.contains("gif") -> ".gif"
-                contentType.contains("tiff") -> ".tiff"
-                contentType.contains("webp") -> ".webp"
-                else -> ".jpg"
+                contentType.contains("jpg") -> "jpg"
+                contentType.contains("jpeg") -> "jpg"
+                contentType.contains("png") -> "png"
+                contentType.contains("gif") -> "gif"
+                contentType.contains("gif") -> "gif"
+                contentType.contains("tiff") -> "tiff"
+                contentType.contains("webp") -> "webp"
+                else -> "jpg"
             }
 
             Files.createDirectories(saveToDirectory.get())

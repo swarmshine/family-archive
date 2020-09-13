@@ -25,7 +25,7 @@ class FamilyArchive : JFrame() {
     val saveToDirectory = PreferenceWidget(
             identity = "saveToDirectory",
             toolTip = "/some/directory",
-            defaultValue = Paths.get("family-archive").toAbsolutePath().toString())
+            defaultValue = Paths.get("family-archive-downloads").toAbsolutePath().toString())
 
     val delayBeforeDownload = PreferenceWidget(
             identity = "delayBeforeDownload",
