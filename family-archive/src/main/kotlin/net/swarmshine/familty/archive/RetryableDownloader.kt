@@ -40,10 +40,12 @@ class RetryableDownloader (
                         restartHttpClient()
                         switchFilmViewerToFirstPageAction()
                     } else {
-                        logger.warn("TooManyRequests, sleeping for ${downloadResult.timeout}")
+                        logger.warn("TooManyRequests, sleeping for ${downloadResult.timeout} and restarting http client")
                         Thread.sleep(downloadResult.timeout)
                         restartHttpClient()
+                        switchFilmViewerToFirstPageAction()
                     }
+                    previousDownloadWasSuccessful = false
                 }
                 is ErrorDownloadResult -> {
                     previousDownloadWasSuccessful = false
